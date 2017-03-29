@@ -1,0 +1,208 @@
+---
+title: "Children Belief Project"
+author: "MSSP Consulting Group: Sijia Li, Fangjing Fu, TF mentor: Jun Li"
+date: "2/13/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(plyr)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(lme4)
+library(lmerTest)
+```
+
+## Project Background
+
+This project is based on a behavior study on children aging between 5 and 10 across Turkey & US, aiming to find the pattern in children's belief on certain topics.
+
+The study data is presented in the form of a questionaire with 5 categories in total. There are 7 questions in each category, 5 as regular questions and 2 as control questions. The five categories are gender, ethnicity, religion, SES (social economic status), and Team (the sport team one supports).
+
+The study data is coded as bianry data. We then computed a total Essentialization score based on the level with "don’t know as 0.5, "yes" as 1 and "no" as 0. 
+
+
+```{r, eval=FALSE, echo=FALSE}
+## Data Cleaning
+##=================calculate the 5 scores====================
+raw <- read.csv("rawdata.csv")
+raw <- raw[1:142,]
+pos <- grep("born", names(raw))
+# 18 28 38 48 58
+names(raw)[c(18,28,38,48,58)]
+
+# dealing with SES.Environment column
+raw$SES.environment <- as.numeric(as.character(raw$SES.environment))
+
+# calculate score
+f <- function(x) {
+  tmp <- raw[x] + raw[x+1] + raw[x+2] + 2 - raw[x+3] - raw[x+4]
+}
+
+df <- as.data.frame(lapply(pos, FUN = f))
+names(df) <- c("Gender.Score", "Ethnicity.Score", "Religion.Score", "SES.Score", "Teams.Score")
+
+##================= create data frame for modeling ====================
+
+obs <- raw[c("Subject.ID", "Country", "Age.in.Years")]
+obs$Country <- as.character(obs$Country)
+obs$Country[obs$Country == "U"] <- "US"
+obs$Country[obs$Country != "US"] <- "Turkey"
+obs$AgeGroupf[obs$Age.in.Years >= 9 & obs$Age.in.Years <= 10] <- "Old"
+obs$AgeGroupf[obs$Age.in.Years >= 7 & obs$Age.in.Years <= 8] <- "Mid"
+obs$AgeGroupf[obs$Age.in.Years >= 5 & obs$Age.in.Years <= 6] <- "Young"
+
+EM1Long <- data.frame()
+for (i in 1:5) {
+  EM1Long.tmp <- mutate(obs, Category = names(df)[i])
+  EM1Long.tmp <- cbind(EM1Long.tmp,df[i])
+  EM1Long <- rbind.fill(EM1Long, EM1Long.tmp)
+}
+EM1Long$Score <- rowSums(EM1Long[6:10], na.rm = TRUE)
+EM1Long <- EM1Long[c("Subject.ID", "Country", "Age.in.Years", "AgeGroupf", "Category", "Score")]
+EM1Long$Category <- gsub(".Score", "", EM1Long$Category)
+names(EM1Long) <- c("participant", "Country", "Age.in.Years", "AgeGroupf", "Category", "Essentialization")
+
+names(df) <- gsub(".Score", "", names(df))
+df <- cbind(obs, df)
+
+save(EM1Long, file = "clean.rda")
+save(df, file = "data for interaction plots.rda")
+```
+
+```{r, echo=FALSE}
+load("clean.rda")
+# There's only one observation of age 11, so we'll also be eliminate that data point for the study from now on.
+EM1Long <- EM1Long[EM1Long$Age.in.Years != 11, ]
+```
+
+
+## Check for Interacton
+The interaction plots are good tools to help detect if there's interaction between variables. 
+```{r, fig.width=12,fig.height=6,fig.align="center" ,out.width="1\\linewidth"}
+par(mfrow = c(2, 3))
+# "Interaction: Country and Age"
+with(EM1Long[EM1Long$Category == "Gender",], 
+     {interaction.plot(Age.in.Years, Country, Essentialization, ylim=c(1,5), main = "Gender")})
+with(EM1Long[EM1Long$Category == "Ethnicity",], 
+     {interaction.plot(Age.in.Years, Country, Essentialization, ylim=c(1,5), main = "Ethnicity")})
+with(EM1Long[EM1Long$Category == "Religion",], 
+     {interaction.plot(Age.in.Years, Country, Essentialization, ylim=c(1,5), main = "Religion")})
+with(EM1Long[EM1Long$Category == "SES",], 
+     {interaction.plot(Age.in.Years, Country, Essentialization, ylim=c(1,5), main = "SES")})
+with(EM1Long[EM1Long$Category == "Teams",], 
+     {interaction.plot(Age.in.Years, Country, Essentialization, ylim=c(1,5), main = "Teams")})
+```
+
+For the five categories, we can see there are multiple overlap so there should be interaction between Age and Country.
+
+## Updated Research Question
+After series of conversation we updated the research questions. Based on the research questions, we performed a series of data visuazlization and fitted some regression models to answer these questions.
+
+The updated questions are:
+
+Q1: Are there any differences between the countries on how much a certain category is essentialized?
+
+Q2: Are there age differences with respect to how the categories are essentialized?
+
+Q3: Are the patterns in which essentialization scores decrease by age similar in both countries, or are there different patterns in the two countries?
+
+
+## Visualization
+### Q1: Are there any differences between the countries on how much a certain category is essentialized?
+
+```{r, message = FALSE, fig.width=12,fig.height=5,fig.align="center" ,out.width="1\\linewidth"}
+ggplot(EM1Long, aes(x = Essentialization)) + geom_histogram(aes(y = ..density..,fill=Country)) + 
+  geom_density(alpha=0.3,aes(fill=Country))+facet_grid(Country ~ Category)
+```
+We can see that there's no significant difference between two countries in the center based on the density plot above.
+
+
+### Q2: Are there age differences with respect to how the categories are essentialized?
+Here we're presenting 2 plots to address this problem. As the data is coded as binary data, the dots on the plots are jittered. 
+
+The first plot is to see the trend and average value in Essentialization score as the age changes. The five regression line represents 5 categories. 
+```{r,fig.width=6,fig.height=5 ,out.width="0.6\\linewidth"}
+p <- ggplot(EM1Long, aes(Age.in.Years, Essentialization, colour = Category))
+p + geom_jitter() + geom_smooth(method = "lm", se = FALSE)
+```
+
+For the five catogories, the hardest to change is Gender, as it's on top of the 5 regression lines with a highest average value. It's followed by Ethnicity, Religion, SES and Teams. By looking at the slope of the lines, we can also see that there is certainly age difference in these categories. 
+In general, as kids grow older, they tend to believe it more that the sports team people support, and people's social status, religion can be more likely to changed. Gender and ethnicity are harder and less likely to change.
+
+
+We can also take a look at the sub plots seperated by category.
+```{r, fig.width=12,fig.height=5,fig.align="center" ,out.width="1\\linewidth"}
+p <- ggplot(EM1Long, aes(Age.in.Years, Essentialization, colour = Category))
+p + geom_jitter() + geom_smooth(method = "lm", se = FALSE)+facet_grid(. ~ Category)
+```
+
+### Q3: Are the patterns in which essentialization scores decrease by age similar in both countries, or are there different patterns in the two countries?
+
+The following two plots is basically the plot in Q2. The y axis (Essentialization) and x axis (Age in Years) are the same, only being seperated to two sub plots by Country. 
+
+```{r, fig.width=12,fig.height=5,fig.align="center" ,out.width="1\\linewidth"}
+p <- ggplot(EM1Long, aes(Age.in.Years, Essentialization, colour = Category))
+p + geom_jitter() + geom_smooth(method = "lm", se = FALSE)+facet_grid(. ~ Country)
+```
+
+We can see the average is pretty much the same, but the data in US is fanning out, indicating a bigger change in children's belif change in the US.
+
+
+## Fitting a model
+Here we're fitting five linear mixed effect model for five categories, with age variable being scaled first and the participant being fixed effect. We also took consideration of the interaction between (scaled) age and country. The result below are the coefficients of the five models. 
+```{r, warning=FALSE}
+EM1Long$Age_c<-scale(EM1Long$Age.in.Years,center=TRUE,scale = FALSE)
+cat_type<-unique(EM1Long$Category)
+reg_list <- vector("list",5)
+for(i in 1:5){
+  reg_list[i] <- lmer(Essentialization ~ Age_c * Country + (1|participant), 
+                    data = EM1Long,subset=EM1Long$Category==cat_type[i])
+}
+cat_type
+lapply(reg_list,function(x) round(summary(x)$coef,2))
+```
+
+## Interpretation
+
+The five regression are based on Gender, Ethnicity, Religion, SES and Teams.
+
+**Intercept:** average essentialization score for the category at the mean age in Turkey  
+
+**Age_c:** slope for Turkey, which indicate increase in essentialization score for a unit increase in age  
+
+**Country_US:** difference in average essentialization score for US relative to Turkey  
+
+**Age_c:CountryUS:** difference in slope for US relative to Turkey, which indicate additional increase/decrease in score for unit increase in age for US.  
+
+
+Take the first regression as an example: It's the coefficient for regression on cagegory Gender. For the four coefficients:
+
+The intercept is the mean essentialization score 3.95 for turkey participants of the average age in this category, which is Gender.
+
+The coefficient for Age_c represents the slope for turkey, supposedly for every unit increase in age, the essentialization score increase by 0.1. But here the P value is greater than 0.05, indicating that there's no difference in the average score. We can also confirm from the plots that the curves are quite flat.
+
+The coefficient for CountryUS represents the shift between two countries, if the participant is from the US, the average essentialization score increase by 0.17. It shows whether there are difference betweeen countires. Again, in the Gender model, it has a bigger p value, indicating there's no difference between theses two countries on average.
+
+The coefficient on the interaction term represents the difference in the slope, comparing participants from the differenct countries.
+
+## Conclusion
+
+Let's go back to the three research questions.
+
+**Q1: Are there any differences between the countries on how much a certain category is essentialized?**
+
+From the density plot there's no significant difference at the center between the two countries. This can also be confirmed by the p values of the variable "CountryUS" in 5 regressions.
+
+**Q2: Are there age differences with respect to how the categories are essentialized?**
+
+From the p value of variable "Age_c" we can see that there's age difference for category "Teams". For other 4 categories, there's no significant difference as age changes. We can also see from the plot that the category Team has a relatively steeper slope.
+
+**Q3: Are the patterns in which essentialization scores decrease by age similar in both countries, or are there different patterns in the two countries?**
+
+For category "SES" and "Teams" we can see that there's a very small p value for variable "Age_c:CountryUS", indicating there's a significant difference in the slopes between Turkey and US.
